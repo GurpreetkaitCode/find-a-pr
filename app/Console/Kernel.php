@@ -2,9 +2,9 @@
 
 namespace App\Console;
 
+use App\Jobs\SendPing;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
-use Illuminate\Support\Facades\Http;
 
 class Kernel extends ConsoleKernel
 {
@@ -16,12 +16,11 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        $schedule->command('repos:preload')
-            ->hourly()
-            ->then(fn () => $this->call('issues:tweet'));
+        $schedule->command('repos:preload')->hourly();
+        $schedule->command('repos:crawlable')->weekly();
 
-        // Ping OhDear to make sure the scheduler is running.
-        $schedule->call(fn () => Http::get(config('services.ohdear.ping_url')))->everyMinute();
+        // Ping OhDear to make sure the scheduler and default queue is running.
+        $schedule->job(new SendPing(config('services.ohdear.ping_url')))->everyMinute();
     }
 
     /**

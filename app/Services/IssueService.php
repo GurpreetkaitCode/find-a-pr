@@ -10,6 +10,7 @@ use App\DataTransferObjects\Reaction;
 use App\DataTransferObjects\Repository;
 use App\Exceptions\GitHubRateLimitException;
 use Carbon\Carbon;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -30,12 +31,19 @@ class IssueService
 
     /**
      * @param  Repository  $repo
+     * @param  bool  $forceRefresh
      * @return array<Issue>
      */
-    private function getIssuesForRepo(Repository $repo): array
+    public function getIssuesForRepo(Repository $repo, bool $forceRefresh = false): array
     {
+        $cacheKey = $repo->owner.'/'.$repo->name;
+
+        if ($forceRefresh) {
+            Cache::forget($cacheKey);
+        }
+
         $fetchedIssues = Cache::remember(
-            $repo->owner.'/'.$repo->name,
+            $cacheKey,
             now()->addMinutes(120),
             fn (): array => $this->getIssuesFromGitHubApi($repo),
         );
@@ -92,7 +100,7 @@ class IssueService
     }
 
     /**
-     * @param  array<Label>  $fetchedIssue
+     * @param  array  $fetchedIssue
      * @return array
      */
     private function getIssueLabels(array $fetchedIssue): array
@@ -107,7 +115,7 @@ class IssueService
     }
 
     /**
-     * @param  array<Reaction>  $fetchedIssue
+     * @param  array  $fetchedIssue
      * @return array
      */
     private function getIssueReactions(array $fetchedIssue): array
@@ -135,12 +143,14 @@ class IssueService
      */
     private function getIssuesFromGitHubApi(Repository $repo): array
     {
+        $fullRepoName = $repo->owner.'/'.$repo->name;
+
         $result = app(GitHub::class)
             ->client()
-            ->get($repo->owner.'/'.$repo->name.'/issues');
+            ->get('repos/'.$fullRepoName.'/issues');
 
         if (! $result->successful()) {
-            throw new GitHubRateLimitException('GitHub API rate limit reached!');
+            return $this->handleUnsuccessfulIssueRequest($result, $fullRepoName);
         }
 
         $fetchedIssues = $result->json();
@@ -148,5 +158,46 @@ class IssueService
         return collect($fetchedIssues)
             ->map(fn (array $fetchedIssue): Issue => $this->parseIssue($repo, $fetchedIssue))
             ->all();
+    }
+
+    /**
+     * @param  Response  $response
+     * @param  string  $fullRepoName
+     * @return array
+     *
+     * @throws GitHubRateLimitException
+     */
+    private function handleUnsuccessfulIssueRequest(Response $response, string $fullRepoName): array
+    {
+        return match ($response->status()) {
+            404 => $this->handleNotFoundResponse($fullRepoName),
+            403 => $this->handleForbiddenResponse($response, $fullRepoName),
+            default => [],
+        };
+    }
+
+    private function handleNotFoundResponse(string $fullRepoName): array
+    {
+        report($fullRepoName.' is not a valid GitHub repo.');
+
+        return [];
+    }
+
+    /**
+     * @param  Response  $response
+     * @param  string  $fullRepoName
+     * @return array
+     *
+     * @throws GitHubRateLimitException
+     */
+    private function handleForbiddenResponse(Response $response, string $fullRepoName): array
+    {
+        if ($response->header('X-RateLimit-Remaining') === '0') {
+            throw new GitHubRateLimitException('GitHub API rate limit reached!');
+        }
+
+        report($fullRepoName.' is a forbidden GitHub repo.');
+
+        return [];
     }
 }

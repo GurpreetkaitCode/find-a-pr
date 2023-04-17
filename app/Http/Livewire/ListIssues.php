@@ -81,6 +81,8 @@ class ListIssues extends Component
 
     public function mount(): void
     {
+        $this->setSortOrderOnPageLoad();
+
         $this->labels = config('repos.labels');
         $this->repos = app(RepoService::class)->reposToCrawl()->sort();
 
@@ -151,18 +153,33 @@ class ListIssues extends Component
         };
     }
 
-    public function hideFirstTimeNotice(): void
+    public function updatedShouldDisplayFirstTimeNotice(): void
     {
-        $this->shouldDisplayFirstTimeNotice = false;
-
         // 4 weeks = 40,320 minutes
         Cookie::queue('firstTimeNoticeClosed', true, 40_320);
     }
 
     public function updatedIgnoredUrls(array $urls): void
     {
-        if (! $urls) {
+        $this->ignoredUrls = collect($urls)
+            ->filter(function (string $url): bool {
+                return $this->originalIssues->contains(fn (Issue $issue): bool => $url === $issue->url);
+            })
+            ->toArray();
+
+        if (! $this->ignoredUrls) {
             $this->showIgnoredIssues = false;
+        }
+    }
+
+    private function setSortOrderOnPageLoad(): void
+    {
+        if ($this->sortField) {
+            $this->sort = collect(self::SORTS)
+                ->where('field', $this->sortField)
+                ->where('direction', $this->sortDirection)
+                ->keys()
+                ->first();
         }
     }
 }
